@@ -8,7 +8,7 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
 } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { getAuthInstance } from '@/lib/firebase';
 import { initUserProfile } from '@/lib/firestore';
 
 function toEmail(id: string) {
@@ -44,6 +44,7 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const email = toEmail(userId);
+      const auth = getAuthInstance();
       if (isSignUp) {
         const cred = await createUserWithEmailAndPassword(auth, email, password);
         await initUserProfile(cred.user.uid);

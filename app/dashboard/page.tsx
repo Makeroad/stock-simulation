@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic';
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { getAuthInstance } from '@/lib/firebase';
 import {
   getUserProfile,
   getHoldings,
@@ -87,7 +87,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (u) => {
+    const unsub = onAuthStateChanged(getAuthInstance(), async (u) => {
       if (!u) { router.push('/login'); return; }
       setUser(u);
       // Firestore 연결 대기 후 재시도
@@ -204,7 +204,7 @@ export default function DashboardPage() {
   }
 
   async function handleLogout() {
-    await signOut(auth);
+    await signOut(getAuthInstance());
     router.push('/login');
   }
 

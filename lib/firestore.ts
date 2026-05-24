@@ -1,4 +1,6 @@
-import { db } from './firebase';
+'use client';
+
+import { getDbInstance } from './firebase';
 import {
   doc,
   getDoc,
@@ -30,6 +32,7 @@ export interface UserProfile {
 }
 
 export async function initUserProfile(uid: string) {
+  const db = getDbInstance();
   const profileRef = doc(db, 'users', uid, 'data', 'profile');
   const snap = await getDoc(profileRef);
   if (!snap.exists()) {
@@ -42,11 +45,13 @@ export async function initUserProfile(uid: string) {
 }
 
 export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+  const db = getDbInstance();
   const snap = await getDoc(doc(db, 'users', uid, 'data', 'profile'));
   return snap.exists() ? (snap.data() as UserProfile) : null;
 }
 
 export async function getHoldings(uid: string): Promise<Record<string, Holding>> {
+  const db = getDbInstance();
   const snap = await getDoc(doc(db, 'users', uid, 'data', 'holdings'));
   return snap.exists() ? (snap.data() as Record<string, Holding>) : {};
 }
@@ -61,6 +66,7 @@ export async function buyStock(
   currentCash: number,
   currentHoldings: Record<string, Holding>
 ) {
+  const db = getDbInstance();
   const total = price * quantity;
   if (total > currentCash) throw new Error('Insufficient cash');
 
@@ -106,6 +112,7 @@ export async function sellStock(
   currentCash: number,
   currentHoldings: Record<string, Holding>
 ) {
+  const db = getDbInstance();
   const holding = currentHoldings[symbol];
   if (!holding) throw new Error('No holding found');
   if (quantity > holding.quantity) throw new Error('Insufficient holdings');
