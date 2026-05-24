@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
   if (!profileData) return NextResponse.json({ filled: [] });
 
   let profile = profileData as { cashKRW: number; cashUSD: number; seedMoneyKRW: number; seedMoneyUSD: number };
-  let holdings = (holdingsData ?? {}) as Record<string, { avgPrice: number; quantity: number; name: string; market: string }>;
+  const holdings = (holdingsData ?? {}) as Record<string, { avgPrice: number; quantity: number; name: string; market: string }>;
 
   const filled: string[] = [];
   const remaining: Record<string, unknown>[] = [];
