@@ -109,7 +109,7 @@ export default function DashboardPage() {
       const data = await res.json();
       setSearchResults(data);
     } catch {
-      setTradeError('Search failed');
+      setTradeError('검색에 실패했습니다.');
     } finally {
       setQuoteLoading(false);
     }
@@ -124,12 +124,12 @@ export default function DashboardPage() {
     try {
       const res = await fetch(`/api/quote/${encodeURIComponent(sym)}`);
       const data = await res.json();
-      if (data.error) { setTradeError(data.error); return; }
+      if (data.error) { setTradeError('시세 조회에 실패했습니다.'); return; }
       setSelectedStock(data);
       setBuyPrice(String(data.price));
       setSellPrice(String(data.price));
     } catch {
-      setTradeError('Failed to fetch quote');
+      setTradeError('시세 조회에 실패했습니다.');
     } finally {
       setQuoteLoading(false);
     }
@@ -140,17 +140,18 @@ export default function DashboardPage() {
     const qty = parseInt(buyQty);
     const price = parseFloat(buyPrice);
     if (isNaN(qty) || qty <= 0 || isNaN(price) || price <= 0) {
-      setTradeError('Invalid quantity or price'); return;
+      setTradeError('수량 또는 가격을 올바르게 입력해 주세요.'); return;
     }
     setTradeLoading(true); setTradeMsg(''); setTradeError('');
     try {
       await buyStock(user.uid, selectedStock.symbol, selectedStock.name, market, price, qty, profile.cash, holdings);
       const { h } = await loadUserData(user.uid);
       await fetchHoldingPrices(h);
-      setTradeMsg(`Bought ${qty} shares of ${selectedStock.symbol} @ ${fmt(price, 2)}`);
+      setTradeMsg(`${selectedStock.symbol} ${fmt(qty)}주를 ${fmt(price, 2)}에 매수했습니다.`);
       setBuyQty('');
     } catch (err: unknown) {
-      setTradeError(err instanceof Error ? err.message : 'Trade failed');
+      const msg = err instanceof Error ? err.message : '';
+      setTradeError(msg === 'Insufficient cash' ? '잔액이 부족합니다.' : '매수에 실패했습니다.');
     } finally {
       setTradeLoading(false);
     }
@@ -161,17 +162,19 @@ export default function DashboardPage() {
     const qty = parseInt(sellQty);
     const price = parseFloat(sellPrice);
     if (isNaN(qty) || qty <= 0 || isNaN(price) || price <= 0) {
-      setTradeError('Invalid quantity or price'); return;
+      setTradeError('수량 또는 가격을 올바르게 입력해 주세요.'); return;
     }
     setTradeLoading(true); setTradeMsg(''); setTradeError('');
     try {
       await sellStock(user.uid, selectedStock.symbol, price, qty, profile.cash, holdings);
       const { h } = await loadUserData(user.uid);
       await fetchHoldingPrices(h);
-      setTradeMsg(`Sold ${qty} shares of ${selectedStock.symbol} @ ${fmt(price, 2)}`);
+      setTradeMsg(`${selectedStock.symbol} ${fmt(qty)}주를 ${fmt(price, 2)}에 매도했습니다.`);
       setSellQty('');
     } catch (err: unknown) {
-      setTradeError(err instanceof Error ? err.message : 'Trade failed');
+      const msg = err instanceof Error ? err.message : '';
+      if (msg === 'Insufficient holdings') setTradeError('보유 수량이 부족합니다.');
+      else setTradeError('매도에 실패했습니다.');
     } finally {
       setTradeLoading(false);
     }
@@ -182,7 +185,6 @@ export default function DashboardPage() {
     router.push('/login');
   }
 
-  // Portfolio stats
   const totalHoldingValue = holdingsWithPrice.reduce((sum, h) => {
     return sum + (h.currentPrice !== null ? h.currentPrice * h.quantity : h.avgPrice * h.quantity);
   }, 0);
@@ -191,12 +193,15 @@ export default function DashboardPage() {
   const totalReturnPct = ((totalAssets - seedMoney) / seedMoney) * 100;
 
   const currentHolding = selectedStock ? holdings[selectedStock.symbol] : null;
-  const isCurrencyKRW = selectedStock?.currency === 'KRW' || market === 'KR';
+  const isKRW = selectedStock?.currency === 'KRW' || market === 'KR';
+
+  // 아이디 추출 (fake email에서)
+  const displayId = user?.email?.replace('@stockapp.local', '') ?? '';
 
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0f0f0f] flex items-center justify-center">
-        <div className="text-green-400 text-sm tracking-widest animate-pulse">LOADING MARKET DATA...</div>
+        <div className="text-green-400 text-sm tracking-widest animate-pulse">시세 데이터 불러오는 중...</div>
       </div>
     );
   }
@@ -205,52 +210,52 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-[#0f0f0f] p-3 md:p-6">
       <div className="max-w-6xl mx-auto">
 
-        {/* Header */}
+        {/* 헤더 */}
         <div className="flex items-center justify-between mb-6 border-b border-[#1f1f1f] pb-4">
           <div>
-            <div className="text-green-400 text-lg font-bold tracking-widest">▶ STOCK TERMINAL</div>
-            <div className="text-gray-600 text-xs">{user?.email}</div>
+            <div className="text-green-400 text-lg font-bold tracking-widest">▶ 주식 터미널</div>
+            <div className="text-gray-600 text-xs">{displayId}</div>
           </div>
           <button
             onClick={handleLogout}
-            className="text-xs text-gray-500 hover:text-red-400 border border-[#2a2a2a] hover:border-red-900 px-3 py-1.5 rounded transition-colors tracking-widest"
+            className="text-xs text-gray-500 hover:text-red-400 border border-[#2a2a2a] hover:border-red-900 px-3 py-1.5 rounded transition-colors"
           >
-            LOGOUT
+            로그아웃
           </button>
         </div>
 
-        {/* Stats Bar */}
+        {/* 자산 요약 */}
         <div className="grid grid-cols-3 gap-3 mb-6">
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-3">
-            <div className="text-gray-500 text-xs tracking-widest mb-1">CASH</div>
+            <div className="text-gray-500 text-xs mb-1">보유 현금</div>
             <div className="text-white text-sm font-bold">₩{fmt(profile?.cash ?? 0)}</div>
           </div>
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-3">
-            <div className="text-gray-500 text-xs tracking-widest mb-1">TOTAL ASSETS</div>
+            <div className="text-gray-500 text-xs mb-1">총 자산</div>
             <div className="text-white text-sm font-bold">₩{fmt(totalAssets)}</div>
           </div>
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-3">
-            <div className="text-gray-500 text-xs tracking-widest mb-1">TOTAL RETURN</div>
+            <div className="text-gray-500 text-xs mb-1">총 수익률</div>
             <div className={`text-sm font-bold ${totalReturnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
               {totalReturnPct >= 0 ? '+' : ''}{totalReturnPct.toFixed(2)}%
             </div>
           </div>
         </div>
 
-        {/* Market Toggle + Search */}
+        {/* 시장 선택 + 검색 */}
         <div className="bg-[#141414] border border-[#1f1f1f] rounded p-4 mb-4">
           <div className="flex gap-2 mb-4">
             <button
               onClick={() => { setMarket('US'); setSelectedStock(null); setSearchResults([]); setSearchQuery(''); }}
-              className={`px-4 py-1.5 rounded text-xs tracking-widest border transition-colors ${market === 'US' ? 'bg-blue-600 border-blue-600 text-white' : 'border-[#2a2a2a] text-gray-500 hover:text-gray-300'}`}
+              className={`px-4 py-1.5 rounded text-xs border transition-colors ${market === 'US' ? 'bg-blue-600 border-blue-600 text-white' : 'border-[#2a2a2a] text-gray-500 hover:text-gray-300'}`}
             >
-              🇺🇸 US
+              🇺🇸 미국
             </button>
             <button
               onClick={() => { setMarket('KR'); setSelectedStock(null); setSearchResults([]); setSearchQuery(''); }}
-              className={`px-4 py-1.5 rounded text-xs tracking-widest border transition-colors ${market === 'KR' ? 'bg-blue-600 border-blue-600 text-white' : 'border-[#2a2a2a] text-gray-500 hover:text-gray-300'}`}
+              className={`px-4 py-1.5 rounded text-xs border transition-colors ${market === 'KR' ? 'bg-blue-600 border-blue-600 text-white' : 'border-[#2a2a2a] text-gray-500 hover:text-gray-300'}`}
             >
-              🇰🇷 KR
+              🇰🇷 한국
             </button>
           </div>
 
@@ -258,19 +263,19 @@ export default function DashboardPage() {
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={market === 'US' ? 'Search ticker or company (AAPL, Tesla...)' : '종목명 또는 코드 검색 (삼성전자, 005930...)'}
+              placeholder={market === 'US' ? '티커 또는 회사명 검색 (AAPL, Tesla...)' : '종목명 또는 코드 검색 (삼성전자, 005930...)'}
               className="flex-1 bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500 transition-colors placeholder-gray-700"
             />
             <button
               type="submit"
               disabled={quoteLoading}
-              className="bg-green-600 hover:bg-green-500 disabled:bg-green-900 text-black font-bold px-4 py-2 rounded text-xs tracking-widest transition-colors"
+              className="bg-green-600 hover:bg-green-500 disabled:bg-green-900 text-black font-bold px-4 py-2 rounded text-xs transition-colors"
             >
-              {quoteLoading ? '...' : 'SEARCH'}
+              {quoteLoading ? '...' : '검색'}
             </button>
           </form>
 
-          {/* Search Results Dropdown */}
+          {/* 검색 결과 */}
           {searchResults.length > 0 && (
             <div className="mt-2 border border-[#2a2a2a] rounded overflow-hidden">
               {searchResults.map((r) => (
@@ -287,7 +292,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Quote + Trade Panel */}
+        {/* 시세 + 매매 패널 */}
         {selectedStock && (
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-4 mb-4">
             <div className="flex items-start justify-between mb-4">
@@ -297,96 +302,83 @@ export default function DashboardPage() {
               </div>
               <div className="text-right">
                 <div className="text-white text-xl font-bold">
-                  {isCurrencyKRW ? '₩' : '$'}{fmt(selectedStock.price, isCurrencyKRW ? 0 : 2)}
+                  {isKRW ? '₩' : '$'}{fmt(selectedStock.price, isKRW ? 0 : 2)}
                 </div>
                 <div className="text-gray-500 text-xs">{selectedStock.currency}</div>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Buy Form */}
+              {/* 매수 */}
               <div className="border border-[#2a2a2a] rounded p-3">
-                <div className="text-green-400 text-xs tracking-widest mb-3 font-bold">▲ BUY</div>
+                <div className="text-green-400 text-xs mb-3 font-bold">▲ 매수</div>
                 <div className="space-y-2">
                   <div>
-                    <label className="text-gray-600 text-xs tracking-widest block mb-1">QUANTITY</label>
+                    <label className="text-gray-600 text-xs block mb-1">수량</label>
                     <input
-                      type="number"
-                      min="1"
-                      value={buyQty}
+                      type="number" min="1" value={buyQty}
                       onChange={(e) => setBuyQty(e.target.value)}
                       className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500"
                       placeholder="0"
                     />
                   </div>
                   <div>
-                    <label className="text-gray-600 text-xs tracking-widest block mb-1">LIMIT PRICE</label>
+                    <label className="text-gray-600 text-xs block mb-1">지정가</label>
                     <input
-                      type="number"
-                      min="0"
-                      step="any"
-                      value={buyPrice}
+                      type="number" min="0" step="any" value={buyPrice}
                       onChange={(e) => setBuyPrice(e.target.value)}
                       className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500"
                     />
                   </div>
                   {buyQty && buyPrice && (
                     <div className="text-gray-500 text-xs">
-                      Total: {isCurrencyKRW ? '₩' : '$'}{fmt(parseFloat(buyPrice) * parseInt(buyQty), isCurrencyKRW ? 0 : 2)}
+                      합계: {isKRW ? '₩' : '$'}{fmt(parseFloat(buyPrice) * parseInt(buyQty), isKRW ? 0 : 2)}
                     </div>
                   )}
                   <button
-                    onClick={handleBuy}
-                    disabled={tradeLoading}
-                    className="w-full bg-green-600 hover:bg-green-500 disabled:bg-green-900 disabled:text-green-800 text-black font-bold py-2 rounded text-xs tracking-widest transition-colors"
+                    onClick={handleBuy} disabled={tradeLoading}
+                    className="w-full bg-green-600 hover:bg-green-500 disabled:bg-green-900 disabled:text-green-800 text-black font-bold py-2 rounded text-xs transition-colors"
                   >
-                    {tradeLoading ? 'PROCESSING...' : 'BUY'}
+                    {tradeLoading ? '처리 중...' : '매수'}
                   </button>
                 </div>
               </div>
 
-              {/* Sell Form */}
+              {/* 매도 */}
               {currentHolding && (
                 <div className="border border-[#2a2a2a] rounded p-3">
-                  <div className="text-red-400 text-xs tracking-widest mb-3 font-bold">▼ SELL</div>
+                  <div className="text-red-400 text-xs mb-3 font-bold">▼ 매도</div>
                   <div className="text-gray-500 text-xs mb-2">
-                    Holding: {fmt(currentHolding.quantity)} shares @ avg {isCurrencyKRW ? '₩' : '$'}{fmt(currentHolding.avgPrice, isCurrencyKRW ? 0 : 2)}
+                    보유: {fmt(currentHolding.quantity)}주 · 평균단가 {isKRW ? '₩' : '$'}{fmt(currentHolding.avgPrice, isKRW ? 0 : 2)}
                   </div>
                   <div className="space-y-2">
                     <div>
-                      <label className="text-gray-600 text-xs tracking-widest block mb-1">QUANTITY</label>
+                      <label className="text-gray-600 text-xs block mb-1">수량</label>
                       <input
-                        type="number"
-                        min="1"
-                        max={currentHolding.quantity}
-                        value={sellQty}
+                        type="number" min="1" max={currentHolding.quantity} value={sellQty}
                         onChange={(e) => setSellQty(e.target.value)}
                         className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500"
                         placeholder="0"
                       />
                     </div>
                     <div>
-                      <label className="text-gray-600 text-xs tracking-widest block mb-1">LIMIT PRICE</label>
+                      <label className="text-gray-600 text-xs block mb-1">지정가</label>
                       <input
-                        type="number"
-                        min="0"
-                        step="any"
-                        value={sellPrice}
+                        type="number" min="0" step="any" value={sellPrice}
                         onChange={(e) => setSellPrice(e.target.value)}
                         className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500"
                       />
                     </div>
                     {sellQty && sellPrice && (
                       <div className="text-gray-500 text-xs">
-                        Total: {isCurrencyKRW ? '₩' : '$'}{fmt(parseFloat(sellPrice) * parseInt(sellQty), isCurrencyKRW ? 0 : 2)}
+                        합계: {isKRW ? '₩' : '$'}{fmt(parseFloat(sellPrice) * parseInt(sellQty), isKRW ? 0 : 2)}
                       </div>
                     )}
                     <button
-                      onClick={handleSell}
-                      disabled={tradeLoading}
-                      className="w-full bg-red-700 hover:bg-red-600 disabled:bg-red-950 disabled:text-red-900 text-white font-bold py-2 rounded text-xs tracking-widest transition-colors"
+                      onClick={handleSell} disabled={tradeLoading}
+                      className="w-full bg-red-700 hover:bg-red-600 disabled:bg-red-950 disabled:text-red-900 text-white font-bold py-2 rounded text-xs transition-colors"
                     >
-                      {tradeLoading ? 'PROCESSING...' : 'SELL'}
+                      {tradeLoading ? '처리 중...' : '매도'}
                     </button>
                   </div>
                 </div>
@@ -406,36 +398,36 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Portfolio Table */}
+        {/* 포트폴리오 */}
         <div className="bg-[#141414] border border-[#1f1f1f] rounded">
           <div className="px-4 py-3 border-b border-[#1f1f1f]">
-            <span className="text-gray-400 text-xs tracking-widest">PORTFOLIO</span>
+            <span className="text-gray-400 text-xs">포트폴리오</span>
             {holdingsWithPrice.length > 0 && (
-              <span className="text-gray-600 text-xs ml-2">({holdingsWithPrice.length} positions)</span>
+              <span className="text-gray-600 text-xs ml-2">({holdingsWithPrice.length}개 종목)</span>
             )}
           </div>
           {holdingsWithPrice.length === 0 ? (
             <div className="px-4 py-8 text-center text-gray-700 text-sm">
-              No positions yet. Search and buy your first stock.
+              보유 종목이 없습니다. 종목을 검색하고 첫 매수를 시작해 보세요.
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-[#1a1a1a]">
-                    <th className="text-left px-4 py-2 text-gray-600 tracking-widest font-normal">TICKER</th>
-                    <th className="text-left px-4 py-2 text-gray-600 tracking-widest font-normal hidden md:table-cell">NAME</th>
-                    <th className="text-right px-4 py-2 text-gray-600 tracking-widest font-normal">AVG PRICE</th>
-                    <th className="text-right px-4 py-2 text-gray-600 tracking-widest font-normal">QTY</th>
-                    <th className="text-right px-4 py-2 text-gray-600 tracking-widest font-normal">CURRENT</th>
-                    <th className="text-right px-4 py-2 text-gray-600 tracking-widest font-normal">P&amp;L</th>
+                    <th className="text-left px-4 py-2 text-gray-600 font-normal">종목</th>
+                    <th className="text-left px-4 py-2 text-gray-600 font-normal hidden md:table-cell">종목명</th>
+                    <th className="text-right px-4 py-2 text-gray-600 font-normal">평균단가</th>
+                    <th className="text-right px-4 py-2 text-gray-600 font-normal">수량</th>
+                    <th className="text-right px-4 py-2 text-gray-600 font-normal">현재가</th>
+                    <th className="text-right px-4 py-2 text-gray-600 font-normal">수익률</th>
                   </tr>
                 </thead>
                 <tbody>
                   {holdingsWithPrice.map((h) => {
-                    const isKRW = h.market === 'KR';
-                    const cur = isKRW ? '₩' : '$';
-                    const dec = isKRW ? 0 : 2;
+                    const krw = h.market === 'KR';
+                    const cur = krw ? '₩' : '$';
+                    const dec = krw ? 0 : 2;
                     return (
                       <tr
                         key={h.symbol}
