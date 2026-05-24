@@ -53,8 +53,7 @@ export default function LoginPage() {
       router.push('/dashboard');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('Auth error:', msg);
-      setError(parseError(msg) + ' [' + msg.match(/\(auth\/[^)]+\)/)?.[0] + ']');
+      setError(parseError(msg));
     } finally {
       setLoading(false);
     }

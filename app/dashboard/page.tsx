@@ -90,9 +90,15 @@ export default function DashboardPage() {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) { router.push('/login'); return; }
       setUser(u);
-      const { h } = await loadUserData(u.uid);
-      await fetchHoldingPrices(h);
-      setLoading(false);
+      try {
+        const { h } = await loadUserData(u.uid);
+        await fetchHoldingPrices(h);
+      } catch (err) {
+        console.error('데이터 로드 실패:', err);
+        setTradeError('데이터를 불러오지 못했습니다. Firestore 설정을 확인해 주세요.');
+      } finally {
+        setLoading(false);
+      }
     });
     return () => unsub();
   }, [router, loadUserData, fetchHoldingPrices]);
