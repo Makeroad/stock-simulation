@@ -48,13 +48,23 @@ async function fsPatch(path: string, fields: Record<string, FsValue>, auth: stri
 
 async function fetchCurrentPrice(symbol: string): Promise<number | null> {
   try {
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'http://localhost:3000';
-    const res = await fetch(`${baseUrl}/api/quote/${encodeURIComponent(symbol)}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.price ?? null;
+    if (symbol.toUpperCase().endsWith('.KS')) {
+      // 한국 주식: Yahoo Finance REST API 직접 호출
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null;
+    } else {
+      // 미국 주식: Finnhub 직접 호출
+      const apiKey = process.env.FINNHUB_API_KEY;
+      const res = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol.toUpperCase()}&token=${apiKey}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.c || null;
+    }
   } catch {
     return null;
   }
@@ -69,19 +79,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: '필수 파라미터 누락' }, { status: 400 });
   }
 
-  // 현재가 조회 및 지정가 검증
+  // 현재가 조회 — 실패 시 거래 차단
   const currentPrice = await fetchCurrentPrice(symbol);
-  if (currentPrice !== null) {
-    if (action === 'buy' && price < currentPrice) {
-      return NextResponse.json({
-        error: `지정가(${price.toLocaleString()})가 현재가(${Math.round(currentPrice).toLocaleString()})보다 낮습니다. 현재가 이상으로 입력해 주세요.`,
-      }, { status: 400 });
-    }
-    if (action === 'sell' && price > currentPrice) {
-      return NextResponse.json({
-        error: `지정가(${price.toLocaleString()})가 현재가(${Math.round(currentPrice).toLocaleString()})보다 높습니다. 현재가 이하로 입력해 주세요.`,
-      }, { status: 400 });
-    }
+  if (currentPrice === null) {
+    return NextResponse.json({ error: '현재가를 조회할 수 없어 거래를 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.' }, { status: 503 });
+  }
+
+  // 지정가 검증 (실제 시세 기준)
+  if (action === 'buy' && price < currentPrice) {
+    return NextResponse.json({
+      error: `현재가 ${market === 'KR' ? '₩' : '$'}${Math.round(currentPrice).toLocaleString()}에 아직 도달하지 않았습니다. 지정가를 현재가 이상으로 입력해 주세요.`,
+    }, { status: 400 });
+  }
+  if (action === 'sell' && price > currentPrice) {
+    return NextResponse.json({
+      error: `현재가 ${market === 'KR' ? '₩' : '$'}${Math.round(currentPrice).toLocaleString()}에 아직 도달하지 않았습니다. 지정가를 현재가 이하로 입력해 주세요.`,
+    }, { status: 400 });
   }
 
   // 프로필 + 보유 주식 조회
