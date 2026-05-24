@@ -11,6 +11,15 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-export const auth = getAuth(app);
-export const db = getFirestore(app);
+// Only initialize Firebase in the browser (avoids build-time errors when env vars are absent)
+const app =
+  typeof window !== 'undefined'
+    ? getApps().length === 0
+      ? initializeApp(firebaseConfig)
+      : getApps()[0]
+    : null;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const auth = app ? getAuth(app) : (null as any);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const db = app ? getFirestore(app) : (null as any);
