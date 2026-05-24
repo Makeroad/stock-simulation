@@ -90,15 +90,32 @@ export default function DashboardPage() {
     const unsub = onAuthStateChanged(auth, async (u) => {
       if (!u) { router.push('/login'); return; }
       setUser(u);
-      try {
-        const { h } = await loadUserData(u.uid);
-        await fetchHoldingPrices(h);
-      } catch (err) {
-        console.error('데이터 로드 실패:', err);
-        setTradeError('데이터를 불러오지 못했습니다. Firestore 설정을 확인해 주세요.');
-      } finally {
-        setLoading(false);
+      // Firestore 연결 대기 후 재시도
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          const { h } = await loadUserData(u.uid);
+          await fetchHoldingPrices(h);
+          break;
+        } catch (err: unknown) {
+          retries--;
+          const msg = err instanceof Error ? err.message : '';
+          if (retries > 0 && msg.includes('offline')) {
+            await new Promise((r) => setTimeout(r, 2000));
+          } else {
+            console.error('데이터 로드 실패:', err);
+            setTradeError(
+              msg.includes('offline')
+                ? 'Firestore에 연결할 수 없습니다. Firebase Console에서 Firestore 데이터베이스와 보안 규칙을 확인해 주세요.'
+                : msg.includes('permission') || msg.includes('Missing or insufficient')
+                ? 'Firestore 보안 규칙을 확인해 주세요.'
+                : '데이터를 불러오지 못했습니다.'
+            );
+            break;
+          }
+        }
       }
+      setLoading(false);
     });
     return () => unsub();
   }, [router, loadUserData, fetchHoldingPrices]);
