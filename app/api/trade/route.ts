@@ -76,13 +76,13 @@ export async function POST(req: NextRequest) {
   const { uid, action, symbol, name, market, quantity } = body;
   let price: number = body.price;
 
-  if (!uid || !action || !symbol || !price || !quantity) {
+  const isMarketOrder = body.isMarketOrder === true;
+  if (!uid || !action || !symbol || (!isMarketOrder && !price) || !quantity) {
     return NextResponse.json({ error: '필수 파라미터 누락' }, { status: 400 });
   }
 
   // 시장가 주문: 현재가 조회 후 그 가격으로 체결
   // 지정가 주문: 현재가 검증 후 지정가로 체결
-  const isMarketOrder = body.isMarketOrder === true;
   const currentPrice = await fetchCurrentPrice(symbol);
 
   if (currentPrice === null) {
