@@ -73,28 +73,37 @@ async function fetchCurrentPrice(symbol: string): Promise<number | null> {
 export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? '';
   const body = await req.json();
-  const { uid, action, symbol, name, market, price, quantity } = body;
+  const { uid, action, symbol, name, market, quantity } = body;
+  let price: number = body.price;
 
   if (!uid || !action || !symbol || !price || !quantity) {
     return NextResponse.json({ error: '필수 파라미터 누락' }, { status: 400 });
   }
 
-  // 현재가 조회 — 실패 시 거래 차단
+  // 시장가 주문: 현재가 조회 후 그 가격으로 체결
+  // 지정가 주문: 현재가 검증 후 지정가로 체결
+  const isMarketOrder = body.isMarketOrder === true;
   const currentPrice = await fetchCurrentPrice(symbol);
+
   if (currentPrice === null) {
-    return NextResponse.json({ error: '현재가를 조회할 수 없어 거래를 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.' }, { status: 503 });
+    return NextResponse.json({ error: '현재가를 조회할 수 없습니다. 잠시 후 다시 시도해 주세요.' }, { status: 503 });
   }
 
-  // 지정가 검증 (실제 시세 기준)
-  if (action === 'buy' && price < currentPrice) {
-    return NextResponse.json({
-      error: `현재가 ${market === 'KR' ? '₩' : '$'}${Math.round(currentPrice).toLocaleString()}에 아직 도달하지 않았습니다. 지정가를 현재가 이상으로 입력해 주세요.`,
-    }, { status: 400 });
-  }
-  if (action === 'sell' && price > currentPrice) {
-    return NextResponse.json({
-      error: `현재가 ${market === 'KR' ? '₩' : '$'}${Math.round(currentPrice).toLocaleString()}에 아직 도달하지 않았습니다. 지정가를 현재가 이하로 입력해 주세요.`,
-    }, { status: 400 });
+  // 시장가 주문이면 현재가로 덮어씀
+  if (isMarketOrder) {
+    price = currentPrice;
+  } else {
+    // 지정가 검증
+    if (action === 'buy' && price < currentPrice) {
+      return NextResponse.json({
+        error: `현재가 ${market === 'KR' ? '₩' : '$'}${Math.round(currentPrice).toLocaleString()}에 아직 도달하지 않았습니다. 지정가를 현재가 이상으로 입력하거나 예약 주문을 이용해 주세요.`,
+      }, { status: 400 });
+    }
+    if (action === 'sell' && price > currentPrice) {
+      return NextResponse.json({
+        error: `현재가 ${market === 'KR' ? '₩' : '$'}${Math.round(currentPrice).toLocaleString()}에 아직 도달하지 않았습니다. 지정가를 현재가 이하로 입력하거나 예약 주문을 이용해 주세요.`,
+      }, { status: 400 });
+    }
   }
 
   // 프로필 + 보유 주식 조회

@@ -169,9 +169,8 @@ export default function DashboardPage() {
   async function handleTrade(action: 'buy' | 'sell') {
     if (!user || !selectedStock) return;
     const qty = parseInt(action === 'buy' ? buyQty : sellQty);
-    const price = parseFloat(action === 'buy' ? buyPrice : sellPrice);
-    if (isNaN(qty) || qty <= 0 || isNaN(price) || price <= 0) {
-      setTradeError('수량 또는 가격을 올바르게 입력해 주세요.'); return;
+    if (isNaN(qty) || qty <= 0) {
+      setTradeError('수량을 올바르게 입력해 주세요.'); return;
     }
     setTradeLoading(true); setTradeMsg(''); setTradeError('');
     try {
@@ -179,21 +178,14 @@ export default function DashboardPage() {
       const res = await fetch('/api/trade', {
         method: 'POST',
         headers: { Authorization: auth, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: user.uid, action, symbol: selectedStock.symbol, name: selectedStock.name, market, price, quantity: qty }),
+        body: JSON.stringify({ uid: user.uid, action, symbol: selectedStock.symbol, name: selectedStock.name, market, price: 0, quantity: qty, isMarketOrder: true }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        // 가격 미달 → 예약 주문 제안
-        if (res.status === 400 && data.error?.includes('도달하지 않았습니다')) {
-          setTradeError(data.error + '\n👉 아래 "예약 주문"으로 등록할 수 있습니다.');
-        } else {
-          setTradeError(data.error ?? '거래 실패');
-        }
-        return;
-      }
+      if (!res.ok) { setTradeError(data.error ?? '거래 실패'); return; }
       const { h } = await loadUserData(user.uid);
       await fetchHoldingPrices(h);
-      setTradeMsg(`${selectedStock.symbol} ${qty.toLocaleString()}주 ${action === 'buy' ? '매수' : '매도'} 완료`);
+      const execPrice = data.executedPrice ?? selectedStock.price;
+      setTradeMsg(`${selectedStock.symbol} ${qty.toLocaleString()}주 시장가 ${action === 'buy' ? '매수' : '매도'} 완료 (${fmt(execPrice, isKRWstock)})`);
       if (action === 'buy') setBuyQty(''); else setSellQty('');
     } catch (err: unknown) {
       setTradeError(err instanceof Error ? err.message : '거래 실패');
@@ -359,60 +351,64 @@ export default function DashboardPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* 매수 */}
-              <div className="border border-[#2a2a2a] rounded p-3">
-                <div className="text-green-400 text-xs mb-3 font-bold">▲ 매수</div>
-                <div className="space-y-2">
-                  <div>
-                    <label className="text-gray-600 text-xs block mb-1">수량</label>
-                    <input type="number" min="1" value={buyQty} onChange={e => setBuyQty(e.target.value)}
-                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500" placeholder="0" />
-                  </div>
-                  <div>
-                    <label className="text-gray-600 text-xs block mb-1">지정가</label>
-                    <input type="number" min="0" step="any" value={buyPrice} onChange={e => setBuyPrice(e.target.value)}
-                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500" />
-                  </div>
-                  {buyQty && buyPrice && <div className="text-gray-500 text-xs">합계: {fmt(parseFloat(buyPrice) * parseInt(buyQty), isKRWstock)}</div>}
-                  <div className="grid grid-cols-2 gap-2">
-                    <button onClick={() => handleTrade('buy')} disabled={tradeLoading}
-                      className="bg-green-600 hover:bg-green-500 disabled:bg-green-900 text-black font-bold py-2 rounded text-xs transition-colors">
-                      즉시 매수
-                    </button>
-                    <button onClick={() => handlePendingOrder('buy')} disabled={tradeLoading}
-                      className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-900 text-black font-bold py-2 rounded text-xs transition-colors">
-                      예약 매수
-                    </button>
-                  </div>
+              <div className="border border-[#2a2a2a] rounded p-3 space-y-3">
+                <div className="text-green-400 text-xs font-bold">▲ 매수</div>
+
+                {/* 시장가 */}
+                <div className="bg-[#0a0a0a] rounded p-2 space-y-2">
+                  <div className="text-gray-600 text-xs">시장가 — 현재가 즉시 체결</div>
+                  <input type="number" min="1" value={buyQty} onChange={e => setBuyQty(e.target.value)}
+                    className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500" placeholder="수량" />
+                  {buyQty && selectedStock && <div className="text-gray-600 text-xs">예상: {fmt(selectedStock.price * parseInt(buyQty || '0'), isKRWstock)}</div>}
+                  <button onClick={() => handleTrade('buy')} disabled={tradeLoading}
+                    className="w-full bg-green-600 hover:bg-green-500 disabled:bg-green-900 text-black font-bold py-2 rounded text-xs transition-colors">
+                    시장가 매수
+                  </button>
+                </div>
+
+                {/* 지정가 예약 */}
+                <div className="bg-[#0a0a0a] rounded p-2 space-y-2">
+                  <div className="text-gray-600 text-xs">지정가 예약 — 목표가 도달 시 체결</div>
+                  <input type="number" min="0" step="any" value={buyPrice} onChange={e => setBuyPrice(e.target.value)}
+                    className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-yellow-500" placeholder="지정가" />
+                  {buyPrice && buyQty && <div className="text-gray-600 text-xs">예약 합계: {fmt(parseFloat(buyPrice||'0') * parseInt(buyQty||'0'), isKRWstock)}</div>}
+                  <button onClick={() => handlePendingOrder('buy')} disabled={tradeLoading}
+                    className="w-full bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-900 text-black font-bold py-2 rounded text-xs transition-colors">
+                    예약 매수
+                  </button>
                 </div>
               </div>
 
               {/* 매도 */}
               {currentHolding ? (
-                <div className="border border-[#2a2a2a] rounded p-3">
-                  <div className="text-red-400 text-xs mb-3 font-bold">▼ 매도</div>
-                  <div className="text-gray-500 text-xs mb-2">보유: {currentHolding.quantity.toLocaleString()}주 · 평균 {fmt(currentHolding.avgPrice, isKRWstock)}</div>
-                  <div className="space-y-2">
-                    <div>
-                      <label className="text-gray-600 text-xs block mb-1">수량</label>
-                      <input type="number" min="1" max={currentHolding.quantity} value={sellQty} onChange={e => setSellQty(e.target.value)}
-                        className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500" placeholder="0" />
-                    </div>
-                    <div>
-                      <label className="text-gray-600 text-xs block mb-1">지정가</label>
-                      <input type="number" min="0" step="any" value={sellPrice} onChange={e => setSellPrice(e.target.value)}
-                        className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500" />
-                    </div>
-                    {sellQty && sellPrice && <div className="text-gray-500 text-xs">합계: {fmt(parseFloat(sellPrice) * parseInt(sellQty), isKRWstock)}</div>}
-                    <div className="grid grid-cols-2 gap-2">
-                      <button onClick={() => handleTrade('sell')} disabled={tradeLoading}
-                        className="bg-red-700 hover:bg-red-600 disabled:bg-red-950 text-white font-bold py-2 rounded text-xs transition-colors">
-                        즉시 매도
-                      </button>
-                      <button onClick={() => handlePendingOrder('sell')} disabled={tradeLoading}
-                        className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-900 text-black font-bold py-2 rounded text-xs transition-colors">
-                        예약 매도
-                      </button>
-                    </div>
+                <div className="border border-[#2a2a2a] rounded p-3 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-red-400 text-xs font-bold">▼ 매도</div>
+                    <div className="text-gray-600 text-xs">보유 {currentHolding.quantity.toLocaleString()}주 · 평균 {fmt(currentHolding.avgPrice, isKRWstock)}</div>
+                  </div>
+
+                  {/* 시장가 */}
+                  <div className="bg-[#0a0a0a] rounded p-2 space-y-2">
+                    <div className="text-gray-600 text-xs">시장가 — 현재가 즉시 체결</div>
+                    <input type="number" min="1" max={currentHolding.quantity} value={sellQty} onChange={e => setSellQty(e.target.value)}
+                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500" placeholder="수량" />
+                    {sellQty && selectedStock && <div className="text-gray-600 text-xs">예상: {fmt(selectedStock.price * parseInt(sellQty || '0'), isKRWstock)}</div>}
+                    <button onClick={() => handleTrade('sell')} disabled={tradeLoading}
+                      className="w-full bg-red-700 hover:bg-red-600 disabled:bg-red-950 text-white font-bold py-2 rounded text-xs transition-colors">
+                      시장가 매도
+                    </button>
+                  </div>
+
+                  {/* 지정가 예약 */}
+                  <div className="bg-[#0a0a0a] rounded p-2 space-y-2">
+                    <div className="text-gray-600 text-xs">지정가 예약 — 목표가 도달 시 체결</div>
+                    <input type="number" min="0" step="any" value={sellPrice} onChange={e => setSellPrice(e.target.value)}
+                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-yellow-500" placeholder="지정가" />
+                    {sellPrice && sellQty && <div className="text-gray-600 text-xs">예약 합계: {fmt(parseFloat(sellPrice||'0') * parseInt(sellQty||'0'), isKRWstock)}</div>}
+                    <button onClick={() => handlePendingOrder('sell')} disabled={tradeLoading}
+                      className="w-full bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-900 text-black font-bold py-2 rounded text-xs transition-colors">
+                      예약 매도
+                    </button>
                   </div>
                 </div>
               ) : (
