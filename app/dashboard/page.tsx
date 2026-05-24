@@ -12,16 +12,29 @@ interface SearchResult { symbol: string; name: string; }
 interface Holding { avgPrice: number; quantity: number; name: string; market: 'US' | 'KR'; }
 interface UserProfile { cashKRW: number; cashUSD: number; seedMoneyKRW: number; seedMoneyUSD: number; }
 interface HoldingWithPrice extends Holding { symbol: string; currentPrice: number | null; pnlPct: number | null; }
+interface PendingOrder {
+  id: string; symbol: string; name: string; market: 'US' | 'KR';
+  type: 'buy' | 'sell'; limitPrice: number; quantity: number;
+  expiresAt: string; createdAt: string;
+}
 
 function fmtKRW(n: number) { return '₩' + Math.round(n).toLocaleString('ko-KR'); }
 function fmtUSD(n: number) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function fmt(n: number, isKRW: boolean) { return isKRW ? fmtKRW(n) : fmtUSD(n); }
+function fmtExpiry(iso: string) {
+  const d = new Date(iso);
+  const now = new Date();
+  const diff = d.getTime() - now.getTime();
+  const days = Math.ceil(diff / (1000 * 60 * 60 * 24));
+  if (days <= 1) return '오늘 마감';
+  if (days <= 7) return `${days}일 후 마감`;
+  return d.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' }) + ' 마감';
+}
 
 async function getToken(): Promise<string> {
   const user = getAuthInstance().currentUser;
   if (!user) throw new Error('로그인이 필요합니다.');
-  const token = await user.getIdToken();
-  return `Bearer ${token}`;
+  return `Bearer ${await user.getIdToken()}`;
 }
 
 async function apiGet(url: string) {
@@ -37,6 +50,8 @@ export default function DashboardPage() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [holdings, setHoldings] = useState<Record<string, Holding>>({});
   const [holdingsWithPrice, setHoldingsWithPrice] = useState<HoldingWithPrice[]>([]);
+  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
+  const [filledNotice, setFilledNotice] = useState('');
   const [market, setMarket] = useState<'US' | 'KR'>('US');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -45,6 +60,7 @@ export default function DashboardPage() {
   const [buyPrice, setBuyPrice] = useState('');
   const [sellQty, setSellQty] = useState('');
   const [sellPrice, setSellPrice] = useState('');
+  const [expiry, setExpiry] = useState<'today' | '1week' | '1month'>('today');
   const [tradeMsg, setTradeMsg] = useState('');
   const [tradeError, setTradeError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -57,7 +73,6 @@ export default function DashboardPage() {
       apiGet(`/api/user/profile?uid=${uid}`),
       apiGet(`/api/user/holdings?uid=${uid}`),
     ]);
-    // 프로필 없으면 초기화
     if (!p) {
       const auth = await getToken();
       const res = await fetch('/api/user/profile', {
@@ -66,30 +81,47 @@ export default function DashboardPage() {
         body: JSON.stringify({ uid }),
       });
       const newP = await res.json();
-      setProfile(newP);
-      setHoldings({});
+      setProfile(newP); setHoldings({});
       return { p: newP, h: {} as Record<string, Holding> };
     }
-    setProfile(p);
-    setHoldings(h ?? {});
+    setProfile(p); setHoldings(h ?? {});
     return { p, h: h ?? {} };
   }, []);
 
   const fetchHoldingPrices = useCallback(async (h: Record<string, Holding>) => {
     const symbols = Object.keys(h);
-    if (symbols.length === 0) { setHoldingsWithPrice([]); return; }
+    if (!symbols.length) { setHoldingsWithPrice([]); return; }
     const results = await Promise.all(symbols.map(async (sym) => {
       try {
-        const res = await fetch(`/api/quote/${encodeURIComponent(sym)}`);
-        const data = await res.json();
+        const data = await fetch(`/api/quote/${encodeURIComponent(sym)}`).then(r => r.json());
         const currentPrice: number | null = data.price ?? null;
         const pnlPct = currentPrice !== null ? ((currentPrice - h[sym].avgPrice) / h[sym].avgPrice) * 100 : null;
         return { symbol: sym, ...h[sym], currentPrice, pnlPct };
-      } catch {
-        return { symbol: sym, ...h[sym], currentPrice: null, pnlPct: null };
-      }
+      } catch { return { symbol: sym, ...h[sym], currentPrice: null, pnlPct: null }; }
     }));
     setHoldingsWithPrice(results);
+  }, []);
+
+  const loadOrders = useCallback(async (uid: string) => {
+    try {
+      const auth = await getToken();
+      const res = await fetch(`/api/orders?uid=${uid}`, { headers: { Authorization: auth } });
+      if (res.ok) setPendingOrders(await res.json());
+    } catch { /* silent */ }
+  }, []);
+
+  const processOrders = useCallback(async (uid: string) => {
+    try {
+      const auth = await getToken();
+      const res = await fetch(`/api/orders/process?uid=${uid}`, {
+        method: 'POST', headers: { Authorization: auth },
+      });
+      if (res.ok) {
+        const { filled, expired } = await res.json();
+        if (filled?.length > 0) setFilledNotice(`🎉 예약 주문 ${filled.length}건이 체결됐습니다!`);
+        else if (expired > 0) setFilledNotice(`⏱ 만료된 예약 주문 ${expired}건이 정리됐습니다.`);
+      }
+    } catch { /* silent */ }
   }, []);
 
   useEffect(() => {
@@ -97,8 +129,11 @@ export default function DashboardPage() {
       if (!u) { router.push('/login'); return; }
       setUser(u);
       try {
-        const { h } = await loadUserData(u.uid);
-        await fetchHoldingPrices(h);
+        const [{ h }] = await Promise.all([
+          loadUserData(u.uid),
+          processOrders(u.uid),
+        ]);
+        await Promise.all([fetchHoldingPrices(h), loadOrders(u.uid)]);
       } catch (err: unknown) {
         setLoadError('데이터를 불러오지 못했습니다: ' + (err instanceof Error ? err.message : ''));
       } finally {
@@ -106,29 +141,27 @@ export default function DashboardPage() {
       }
     });
     return () => unsub();
-  }, [router, loadUserData, fetchHoldingPrices]);
+  }, [router, loadUserData, fetchHoldingPrices, loadOrders, processOrders]);
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
     if (!searchQuery.trim()) return;
     setQuoteLoading(true); setSelectedStock(null); setTradeMsg(''); setTradeError('');
-    try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&market=${market}`);
-      setSearchResults(await res.json());
-    } catch { setTradeError('검색 실패'); }
+    try { setSearchResults(await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&market=${market}`).then(r => r.json())); }
+    catch { setTradeError('검색 실패'); }
     finally { setQuoteLoading(false); }
   }
 
-  async function handleSelectStock(sym: string) {
+  async function handleSelectStock(sym: string, mkt?: 'US' | 'KR') {
     setQuoteLoading(true); setSearchResults([]); setSearchQuery(sym);
     setBuyQty(''); setBuyPrice(''); setSellQty(''); setSellPrice('');
     setTradeMsg(''); setTradeError('');
+    if (mkt) setMarket(mkt);
     try {
       const data = await fetch(`/api/quote/${encodeURIComponent(sym)}`).then(r => r.json());
       if (data.error) { setTradeError('시세 조회 실패: ' + data.error); return; }
       setSelectedStock(data);
-      setBuyPrice(String(data.price));
-      setSellPrice(String(data.price));
+      setBuyPrice(String(data.price)); setSellPrice(String(data.price));
     } catch { setTradeError('시세 조회 실패'); }
     finally { setQuoteLoading(false); }
   }
@@ -146,15 +179,18 @@ export default function DashboardPage() {
       const res = await fetch('/api/trade', {
         method: 'POST',
         headers: { Authorization: auth, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          uid: user.uid, action,
-          symbol: selectedStock.symbol,
-          name: selectedStock.name,
-          market, price, quantity: qty,
-        }),
+        body: JSON.stringify({ uid: user.uid, action, symbol: selectedStock.symbol, name: selectedStock.name, market, price, quantity: qty }),
       });
       const data = await res.json();
-      if (!res.ok) { setTradeError(data.error ?? '거래 실패'); return; }
+      if (!res.ok) {
+        // 가격 미달 → 예약 주문 제안
+        if (res.status === 400 && data.error?.includes('도달하지 않았습니다')) {
+          setTradeError(data.error + '\n👉 아래 "예약 주문"으로 등록할 수 있습니다.');
+        } else {
+          setTradeError(data.error ?? '거래 실패');
+        }
+        return;
+      }
       const { h } = await loadUserData(user.uid);
       await fetchHoldingPrices(h);
       setTradeMsg(`${selectedStock.symbol} ${qty.toLocaleString()}주 ${action === 'buy' ? '매수' : '매도'} 완료`);
@@ -162,6 +198,44 @@ export default function DashboardPage() {
     } catch (err: unknown) {
       setTradeError(err instanceof Error ? err.message : '거래 실패');
     } finally { setTradeLoading(false); }
+  }
+
+  async function handlePendingOrder(action: 'buy' | 'sell') {
+    if (!user || !selectedStock) return;
+    const qty = parseInt(action === 'buy' ? buyQty : sellQty);
+    const price = parseFloat(action === 'buy' ? buyPrice : sellPrice);
+    if (isNaN(qty) || qty <= 0 || isNaN(price) || price <= 0) {
+      setTradeError('수량 또는 가격을 올바르게 입력해 주세요.'); return;
+    }
+    setTradeLoading(true); setTradeMsg(''); setTradeError('');
+    try {
+      const auth = await getToken();
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { Authorization: auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: user.uid, symbol: selectedStock.symbol, name: selectedStock.name, market, type: action, limitPrice: price, quantity: qty, expiry }),
+      });
+      if (!res.ok) { setTradeError('예약 주문 실패'); return; }
+      await loadOrders(user.uid);
+      const expiryLabel = expiry === 'today' ? '오늘 마감' : expiry === '1week' ? '1주일' : '1달';
+      setTradeMsg(`${selectedStock.symbol} ${qty.toLocaleString()}주 ${action === 'buy' ? '매수' : '매도'} 예약 완료 (${expiryLabel}, 지정가 ${fmt(price, market === 'KR')})`);
+      if (action === 'buy') setBuyQty(''); else setSellQty('');
+    } catch (err: unknown) {
+      setTradeError(err instanceof Error ? err.message : '예약 주문 실패');
+    } finally { setTradeLoading(false); }
+  }
+
+  async function handleCancelOrder(orderId: string) {
+    if (!user) return;
+    try {
+      const auth = await getToken();
+      await fetch('/api/orders', {
+        method: 'DELETE',
+        headers: { Authorization: auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: user.uid, orderId }),
+      });
+      await loadOrders(user.uid);
+    } catch { /* silent */ }
   }
 
   const isKRWstock = selectedStock?.currency === 'KRW';
@@ -175,12 +249,11 @@ export default function DashboardPage() {
       <div className="text-green-400 text-sm tracking-widest animate-pulse">불러오는 중...</div>
     </div>
   );
-
   if (loadError) return (
     <div className="min-h-screen bg-[#0f0f0f] flex items-center justify-center p-4">
       <div className="text-center">
         <div className="text-red-400 text-sm mb-4">{loadError}</div>
-        <button onClick={() => window.location.reload()} className="text-xs text-gray-400 border border-[#2a2a2a] px-4 py-2 rounded hover:border-gray-500">새로고침</button>
+        <button onClick={() => window.location.reload()} className="text-xs text-gray-400 border border-[#2a2a2a] px-4 py-2 rounded">새로고침</button>
       </div>
     </div>
   );
@@ -200,6 +273,14 @@ export default function DashboardPage() {
             로그아웃
           </button>
         </div>
+
+        {/* 체결 알림 */}
+        {filledNotice && (
+          <div className="mb-4 text-green-400 text-xs border border-green-900 bg-green-950/30 rounded px-4 py-2 flex justify-between">
+            <span>{filledNotice}</span>
+            <button onClick={() => setFilledNotice('')} className="text-gray-600 hover:text-gray-400 ml-4">✕</button>
+          </div>
+        )}
 
         {/* 자산 요약 */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
@@ -265,6 +346,17 @@ export default function DashboardPage() {
               사용 가능: {isKRWstock ? fmtKRW(profile?.cashKRW ?? 0) : fmtUSD(profile?.cashUSD ?? 0)}
             </div>
 
+            {/* 만기 선택 */}
+            <div className="flex gap-2 mb-4">
+              <span className="text-gray-600 text-xs self-center">예약 만기:</span>
+              {([['today', '오늘'], ['1week', '1주일'], ['1month', '1달']] as const).map(([v, label]) => (
+                <button key={v} onClick={() => setExpiry(v)}
+                  className={`px-3 py-1 rounded text-xs border transition-colors ${expiry === v ? 'bg-yellow-600 border-yellow-600 text-black font-bold' : 'border-[#2a2a2a] text-gray-500 hover:text-gray-300'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* 매수 */}
               <div className="border border-[#2a2a2a] rounded p-3">
@@ -281,10 +373,16 @@ export default function DashboardPage() {
                       className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500" />
                   </div>
                   {buyQty && buyPrice && <div className="text-gray-500 text-xs">합계: {fmt(parseFloat(buyPrice) * parseInt(buyQty), isKRWstock)}</div>}
-                  <button onClick={() => handleTrade('buy')} disabled={tradeLoading}
-                    className="w-full bg-green-600 hover:bg-green-500 disabled:bg-green-900 disabled:text-green-800 text-black font-bold py-2 rounded text-xs transition-colors">
-                    {tradeLoading ? '처리 중...' : '매수'}
-                  </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => handleTrade('buy')} disabled={tradeLoading}
+                      className="bg-green-600 hover:bg-green-500 disabled:bg-green-900 text-black font-bold py-2 rounded text-xs transition-colors">
+                      즉시 매수
+                    </button>
+                    <button onClick={() => handlePendingOrder('buy')} disabled={tradeLoading}
+                      className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-900 text-black font-bold py-2 rounded text-xs transition-colors">
+                      예약 매수
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -305,10 +403,16 @@ export default function DashboardPage() {
                         className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500" />
                     </div>
                     {sellQty && sellPrice && <div className="text-gray-500 text-xs">합계: {fmt(parseFloat(sellPrice) * parseInt(sellQty), isKRWstock)}</div>}
-                    <button onClick={() => handleTrade('sell')} disabled={tradeLoading}
-                      className="w-full bg-red-700 hover:bg-red-600 disabled:bg-red-950 disabled:text-red-900 text-white font-bold py-2 rounded text-xs transition-colors">
-                      {tradeLoading ? '처리 중...' : '매도'}
-                    </button>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button onClick={() => handleTrade('sell')} disabled={tradeLoading}
+                        className="bg-red-700 hover:bg-red-600 disabled:bg-red-950 text-white font-bold py-2 rounded text-xs transition-colors">
+                        즉시 매도
+                      </button>
+                      <button onClick={() => handlePendingOrder('sell')} disabled={tradeLoading}
+                        className="bg-yellow-600 hover:bg-yellow-500 disabled:bg-yellow-900 text-black font-bold py-2 rounded text-xs transition-colors">
+                        예약 매도
+                      </button>
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -316,8 +420,46 @@ export default function DashboardPage() {
               )}
             </div>
 
-            {tradeMsg && <div className="mt-3 text-green-400 text-xs border border-green-900 bg-green-950/30 rounded px-3 py-2">✓ {tradeMsg}</div>}
-            {tradeError && <div className="mt-3 text-red-400 text-xs border border-red-900 bg-red-950/30 rounded px-3 py-2">✗ {tradeError}</div>}
+            {tradeMsg && <div className="mt-3 text-green-400 text-xs border border-green-900 bg-green-950/30 rounded px-3 py-2 whitespace-pre-line">✓ {tradeMsg}</div>}
+            {tradeError && <div className="mt-3 text-red-400 text-xs border border-red-900 bg-red-950/30 rounded px-3 py-2 whitespace-pre-line">✗ {tradeError}</div>}
+          </div>
+        )}
+
+        {/* 예약 주문 목록 */}
+        {pendingOrders.length > 0 && (
+          <div className="bg-[#141414] border border-[#1f1f1f] rounded mb-4">
+            <div className="px-4 py-3 border-b border-[#1f1f1f]">
+              <span className="text-yellow-400 text-xs">⏳ 예약 주문</span>
+              <span className="text-gray-600 text-xs ml-2">({pendingOrders.length}건)</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-[#1a1a1a]">
+                    {['종목', '구분', '지정가', '수량', '만기', ''].map((h, i) => (
+                      <th key={i} className={`px-4 py-2 text-gray-600 font-normal ${i === 0 ? 'text-left' : i === 5 ? 'text-right' : 'text-right'}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingOrders.map(o => (
+                    <tr key={o.id} className="border-b border-[#1a1a1a] last:border-0">
+                      <td className="px-4 py-2 text-green-400 font-mono">{o.symbol}</td>
+                      <td className={`px-4 py-2 text-right font-bold ${o.type === 'buy' ? 'text-green-400' : 'text-red-400'}`}>
+                        {o.type === 'buy' ? '매수' : '매도'}
+                      </td>
+                      <td className="px-4 py-2 text-right text-gray-300">{fmt(o.limitPrice, o.market === 'KR')}</td>
+                      <td className="px-4 py-2 text-right text-gray-300">{o.quantity.toLocaleString()}주</td>
+                      <td className="px-4 py-2 text-right text-gray-500">{fmtExpiry(o.expiresAt)}</td>
+                      <td className="px-4 py-2 text-right">
+                        <button onClick={() => handleCancelOrder(o.id)}
+                          className="text-gray-600 hover:text-red-400 transition-colors text-xs">취소</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
@@ -341,7 +483,7 @@ export default function DashboardPage() {
                 </thead>
                 <tbody>
                   {holdingsWithPrice.map(h => (
-                    <tr key={h.symbol} onClick={() => { setMarket(h.market); handleSelectStock(h.symbol); }}
+                    <tr key={h.symbol} onClick={() => handleSelectStock(h.symbol, h.market)}
                       className="border-b border-[#1a1a1a] hover:bg-[#1a1a1a] cursor-pointer transition-colors">
                       <td className="px-4 py-3 text-green-400 font-mono font-bold">{h.symbol}</td>
                       <td className="px-4 py-3 text-gray-500 hidden md:table-cell">{h.name}</td>
