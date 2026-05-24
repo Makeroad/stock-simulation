@@ -2,7 +2,7 @@
 
 import { initializeApp, getApps, FirebaseApp } from 'firebase/app';
 import { Auth, getAuth } from 'firebase/auth';
-import { Firestore, initializeFirestore, getFirestore } from 'firebase/firestore';
+import { Firestore, initializeFirestore, memoryLocalCache } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -13,7 +13,6 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Lazy singletons — 브라우저에서 처음 호출될 때만 초기화
 let _app: FirebaseApp | undefined;
 let _auth: Auth | undefined;
 let _db: Firestore | undefined;
@@ -34,17 +33,10 @@ export function getAuthInstance(): Auth {
 
 export function getDbInstance(): Firestore {
   if (!_db) {
-    try {
-      _db = initializeFirestore(getApp(), {
-        experimentalForceLongPolling: true,
-      });
-    } catch {
-      _db = getFirestore(getApp());
-    }
+    _db = initializeFirestore(getApp(), {
+      localCache: memoryLocalCache(), // IndexedDB 비활성화 → offline 에러 방지
+      experimentalForceLongPolling: true,
+    });
   }
   return _db;
 }
-
-// 하위 호환용 — 컴포넌트/훅에서 직접 사용하지 말고 getAuthInstance()/getDbInstance() 사용
-export const auth = { get current() { return getAuthInstance(); } };
-export const db = { get current() { return getDbInstance(); } };

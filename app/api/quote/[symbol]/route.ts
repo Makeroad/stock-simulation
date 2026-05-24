@@ -8,17 +8,34 @@ export async function GET(
 
   try {
     if (symbol.endsWith('.KS')) {
-      // Korean stock via yahoo-finance2
-      const yahooFinance = (await import('yahoo-finance2')).default;
-      const quote = await yahooFinance.quote(symbol) as Record<string, unknown>;
+      // 한국 주식: Yahoo Finance REST API 직접 호출
+      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+        },
+        next: { revalidate: 60 },
+      });
+
+      if (!res.ok) {
+        return NextResponse.json({ error: '시세 조회 실패' }, { status: 502 });
+      }
+
+      const data = await res.json();
+      const meta = data?.chart?.result?.[0]?.meta;
+      if (!meta) {
+        return NextResponse.json({ error: '종목을 찾을 수 없습니다' }, { status: 404 });
+      }
+
       return NextResponse.json({
         symbol,
-        name: (quote.longName as string) || (quote.shortName as string) || symbol,
-        price: (quote.regularMarketPrice as number) ?? 0,
+        name: meta.longName || meta.shortName || symbol,
+        price: meta.regularMarketPrice ?? meta.previousClose ?? 0,
         currency: 'KRW',
       });
     } else {
-      // US stock via Finnhub
+      // 미국 주식: Finnhub API
       const apiKey = process.env.FINNHUB_API_KEY;
       const [quoteRes, profileRes] = await Promise.all([
         fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${apiKey}`),
@@ -28,7 +45,7 @@ export async function GET(
       const profileData = await profileRes.json();
 
       if (!quoteData.c || quoteData.c === 0) {
-        return NextResponse.json({ error: 'Symbol not found' }, { status: 404 });
+        return NextResponse.json({ error: '종목을 찾을 수 없습니다' }, { status: 404 });
       }
 
       return NextResponse.json({
@@ -39,7 +56,7 @@ export async function GET(
       });
     }
   } catch (err) {
-    console.error(err);
-    return NextResponse.json({ error: 'Failed to fetch quote' }, { status: 500 });
+    console.error('Quote error:', err);
+    return NextResponse.json({ error: '시세 조회 중 오류가 발생했습니다' }, { status: 500 });
   }
 }
