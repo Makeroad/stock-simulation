@@ -11,6 +11,7 @@ import {
   getHoldings,
   buyStock,
   sellStock,
+  initUserProfile,
   UserProfile,
   Holding,
 } from '@/lib/firestore';
@@ -33,9 +34,9 @@ interface HoldingWithPrice extends Holding {
   pnlPct: number | null;
 }
 
-function fmt(n: number, decimals = 0) {
-  return n.toLocaleString('ko-KR', { maximumFractionDigits: decimals });
-}
+function fmtKRW(n: number) { return '₩' + n.toLocaleString('ko-KR', { maximumFractionDigits: 0 }); }
+function fmtUSD(n: number) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmt(n: number, isKRW: boolean) { return isKRW ? fmtKRW(n) : fmtUSD(n); }
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -54,6 +55,7 @@ export default function DashboardPage() {
   const [tradeMsg, setTradeMsg] = useState('');
   const [tradeError, setTradeError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [tradeLoading, setTradeLoading] = useState(false);
 
@@ -90,11 +92,17 @@ export default function DashboardPage() {
     const unsub = onAuthStateChanged(getAuthInstance(), async (u) => {
       if (!u) { router.push('/login'); return; }
       setUser(u);
-      // Firestore 연결 대기 후 재시도
       let retries = 3;
       while (retries > 0) {
         try {
-          const { h } = await loadUserData(u.uid);
+          let { p, h } = await loadUserData(u.uid);
+          // 프로필이 없으면 초기화 (Firestore 복구 후 첫 로그인)
+          if (!p) {
+            await initUserProfile(u.uid);
+            const result = await loadUserData(u.uid);
+            p = result.p;
+            h = result.h;
+          }
           await fetchHoldingPrices(h);
           break;
         } catch (err: unknown) {
@@ -103,14 +111,7 @@ export default function DashboardPage() {
           if (retries > 0 && msg.includes('offline')) {
             await new Promise((r) => setTimeout(r, 2000));
           } else {
-            console.error('데이터 로드 실패:', err);
-            setTradeError(
-              msg.includes('offline')
-                ? 'Firestore에 연결할 수 없습니다. Firebase Console에서 Firestore 데이터베이스와 보안 규칙을 확인해 주세요.'
-                : msg.includes('permission') || msg.includes('Missing or insufficient')
-                ? 'Firestore 보안 규칙을 확인해 주세요.'
-                : '데이터를 불러오지 못했습니다.'
-            );
+            setLoadError('데이터 로드 실패: ' + (msg || '알 수 없는 오류'));
             break;
           }
         }
@@ -147,7 +148,7 @@ export default function DashboardPage() {
     try {
       const res = await fetch(`/api/quote/${encodeURIComponent(sym)}`);
       const data = await res.json();
-      if (data.error) { setTradeError('시세 조회에 실패했습니다.'); return; }
+      if (data.error) { setTradeError('시세 조회 실패: ' + data.error); return; }
       setSelectedStock(data);
       setBuyPrice(String(data.price));
       setSellPrice(String(data.price));
@@ -159,7 +160,9 @@ export default function DashboardPage() {
   }
 
   async function handleBuy() {
-    if (!user || !profile || !selectedStock) return;
+    if (!user) { setTradeError('로그인이 필요합니다.'); return; }
+    if (!profile) { setTradeError('프로필을 불러오지 못했습니다. 새로고침 해주세요.'); return; }
+    if (!selectedStock) return;
     const qty = parseInt(buyQty);
     const price = parseFloat(buyPrice);
     if (isNaN(qty) || qty <= 0 || isNaN(price) || price <= 0) {
@@ -167,21 +170,23 @@ export default function DashboardPage() {
     }
     setTradeLoading(true); setTradeMsg(''); setTradeError('');
     try {
-      await buyStock(user.uid, selectedStock.symbol, selectedStock.name, market, price, qty, profile.cash, holdings);
+      await buyStock(user.uid, selectedStock.symbol, selectedStock.name, market, price, qty, profile, holdings);
       const { h } = await loadUserData(user.uid);
       await fetchHoldingPrices(h);
-      setTradeMsg(`${selectedStock.symbol} ${fmt(qty)}주를 ${fmt(price, 2)}에 매수했습니다.`);
+      setTradeMsg(`${selectedStock.symbol} ${qty.toLocaleString()}주 매수 완료`);
       setBuyQty('');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
-      setTradeError(msg === 'Insufficient cash' ? '잔액이 부족합니다.' : '매수에 실패했습니다.');
+      setTradeError(msg === 'Insufficient cash' ? '잔액이 부족합니다.' : '매수 실패: ' + msg);
     } finally {
       setTradeLoading(false);
     }
   }
 
   async function handleSell() {
-    if (!user || !profile || !selectedStock) return;
+    if (!user) { setTradeError('로그인이 필요합니다.'); return; }
+    if (!profile) { setTradeError('프로필을 불러오지 못했습니다. 새로고침 해주세요.'); return; }
+    if (!selectedStock) return;
     const qty = parseInt(sellQty);
     const price = parseFloat(sellPrice);
     if (isNaN(qty) || qty <= 0 || isNaN(price) || price <= 0) {
@@ -189,15 +194,15 @@ export default function DashboardPage() {
     }
     setTradeLoading(true); setTradeMsg(''); setTradeError('');
     try {
-      await sellStock(user.uid, selectedStock.symbol, price, qty, profile.cash, holdings);
+      await sellStock(user.uid, selectedStock.symbol, market, price, qty, profile, holdings);
       const { h } = await loadUserData(user.uid);
       await fetchHoldingPrices(h);
-      setTradeMsg(`${selectedStock.symbol} ${fmt(qty)}주를 ${fmt(price, 2)}에 매도했습니다.`);
+      setTradeMsg(`${selectedStock.symbol} ${qty.toLocaleString()}주 매도 완료`);
       setSellQty('');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '';
       if (msg === 'Insufficient holdings') setTradeError('보유 수량이 부족합니다.');
-      else setTradeError('매도에 실패했습니다.');
+      else setTradeError('매도 실패: ' + msg);
     } finally {
       setTradeLoading(false);
     }
@@ -208,23 +213,35 @@ export default function DashboardPage() {
     router.push('/login');
   }
 
-  const totalHoldingValue = holdingsWithPrice.reduce((sum, h) => {
-    return sum + (h.currentPrice !== null ? h.currentPrice * h.quantity : h.avgPrice * h.quantity);
-  }, 0);
-  const totalAssets = (profile?.cash ?? 0) + totalHoldingValue;
-  const seedMoney = profile?.seedMoney ?? 5000000;
-  const totalReturnPct = ((totalAssets - seedMoney) / seedMoney) * 100;
+  // 수익률 계산 (KRW 기준으로 통합 표시)
+  const krwHoldingValue = holdingsWithPrice
+    .filter(h => h.market === 'KR')
+    .reduce((sum, h) => sum + ((h.currentPrice ?? h.avgPrice) * h.quantity), 0);
+  const usdHoldingValue = holdingsWithPrice
+    .filter(h => h.market === 'US')
+    .reduce((sum, h) => sum + ((h.currentPrice ?? h.avgPrice) * h.quantity), 0);
 
+  const isKRWstock = selectedStock?.currency === 'KRW';
   const currentHolding = selectedStock ? holdings[selectedStock.symbol] : null;
-  const isKRW = selectedStock?.currency === 'KRW' || market === 'KR';
-
-  // 아이디 추출 (fake email에서)
   const displayId = user?.email?.replace('@stockapp.local', '') ?? '';
 
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0f0f0f] flex items-center justify-center">
         <div className="text-green-400 text-sm tracking-widest animate-pulse">시세 데이터 불러오는 중...</div>
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-[#0f0f0f] flex items-center justify-center p-4">
+        <div className="text-center">
+          <div className="text-red-400 text-sm mb-4">{loadError}</div>
+          <button onClick={() => window.location.reload()} className="text-xs text-gray-400 border border-[#2a2a2a] px-4 py-2 rounded hover:border-gray-500">
+            새로고침
+          </button>
+        </div>
       </div>
     );
   }
@@ -239,29 +256,28 @@ export default function DashboardPage() {
             <div className="text-green-400 text-lg font-bold tracking-widest">▶ 주식 터미널</div>
             <div className="text-gray-600 text-xs">{displayId}</div>
           </div>
-          <button
-            onClick={handleLogout}
-            className="text-xs text-gray-500 hover:text-red-400 border border-[#2a2a2a] hover:border-red-900 px-3 py-1.5 rounded transition-colors"
-          >
+          <button onClick={handleLogout} className="text-xs text-gray-500 hover:text-red-400 border border-[#2a2a2a] hover:border-red-900 px-3 py-1.5 rounded transition-colors">
             로그아웃
           </button>
         </div>
 
         {/* 자산 요약 */}
-        <div className="grid grid-cols-3 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-3">
-            <div className="text-gray-500 text-xs mb-1">보유 현금</div>
-            <div className="text-white text-sm font-bold">₩{fmt(profile?.cash ?? 0)}</div>
+            <div className="text-gray-500 text-xs mb-1">🇰🇷 보유 현금</div>
+            <div className="text-white text-sm font-bold">{fmtKRW(profile?.cashKRW ?? 0)}</div>
           </div>
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-3">
-            <div className="text-gray-500 text-xs mb-1">총 자산</div>
-            <div className="text-white text-sm font-bold">₩{fmt(totalAssets)}</div>
+            <div className="text-gray-500 text-xs mb-1">🇺🇸 보유 현금</div>
+            <div className="text-white text-sm font-bold">{fmtUSD(profile?.cashUSD ?? 0)}</div>
           </div>
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-3">
-            <div className="text-gray-500 text-xs mb-1">총 수익률</div>
-            <div className={`text-sm font-bold ${totalReturnPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {totalReturnPct >= 0 ? '+' : ''}{totalReturnPct.toFixed(2)}%
-            </div>
+            <div className="text-gray-500 text-xs mb-1">KR 평가금액</div>
+            <div className="text-white text-sm font-bold">{fmtKRW(krwHoldingValue)}</div>
+          </div>
+          <div className="bg-[#141414] border border-[#1f1f1f] rounded p-3">
+            <div className="text-gray-500 text-xs mb-1">US 평가금액</div>
+            <div className="text-white text-sm font-bold">{fmtUSD(usdHoldingValue)}</div>
           </div>
         </div>
 
@@ -286,27 +302,20 @@ export default function DashboardPage() {
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={market === 'US' ? '티커 또는 회사명 검색 (AAPL, Tesla...)' : '종목명 또는 코드 검색 (삼성전자, 005930...)'}
+              placeholder={market === 'US' ? '티커 또는 회사명 (AAPL, Tesla...)' : '종목명 또는 코드 (삼성전자, 005930...)'}
               className="flex-1 bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500 transition-colors placeholder-gray-700"
             />
-            <button
-              type="submit"
-              disabled={quoteLoading}
-              className="bg-green-600 hover:bg-green-500 disabled:bg-green-900 text-black font-bold px-4 py-2 rounded text-xs transition-colors"
-            >
+            <button type="submit" disabled={quoteLoading}
+              className="bg-green-600 hover:bg-green-500 disabled:bg-green-900 text-black font-bold px-4 py-2 rounded text-xs transition-colors">
               {quoteLoading ? '...' : '검색'}
             </button>
           </form>
 
-          {/* 검색 결과 */}
           {searchResults.length > 0 && (
             <div className="mt-2 border border-[#2a2a2a] rounded overflow-hidden">
               {searchResults.map((r) => (
-                <button
-                  key={r.symbol}
-                  onClick={() => handleSelectStock(r.symbol)}
-                  className="w-full text-left px-3 py-2 text-sm hover:bg-[#1a1a1a] border-b border-[#1a1a1a] last:border-0 transition-colors"
-                >
+                <button key={r.symbol} onClick={() => handleSelectStock(r.symbol)}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-[#1a1a1a] border-b border-[#1a1a1a] last:border-0 transition-colors">
                   <span className="text-green-400 font-mono mr-2">{r.symbol}</span>
                   <span className="text-gray-400">{r.name}</span>
                 </button>
@@ -315,7 +324,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* 시세 + 매매 패널 */}
+        {/* 시세 + 매매 */}
         {selectedStock && (
           <div className="bg-[#141414] border border-[#1f1f1f] rounded p-4 mb-4">
             <div className="flex items-start justify-between mb-4">
@@ -324,11 +333,14 @@ export default function DashboardPage() {
                 <div className="text-gray-400 text-sm">{selectedStock.name}</div>
               </div>
               <div className="text-right">
-                <div className="text-white text-xl font-bold">
-                  {isKRW ? '₩' : '$'}{fmt(selectedStock.price, isKRW ? 0 : 2)}
-                </div>
+                <div className="text-white text-xl font-bold">{fmt(selectedStock.price, isKRWstock)}</div>
                 <div className="text-gray-500 text-xs">{selectedStock.currency}</div>
               </div>
+            </div>
+
+            {/* 잔액 안내 */}
+            <div className="text-gray-600 text-xs mb-4">
+              사용 가능: {isKRWstock ? fmtKRW(profile?.cashKRW ?? 0) : fmtUSD(profile?.cashUSD ?? 0)}
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -338,86 +350,60 @@ export default function DashboardPage() {
                 <div className="space-y-2">
                   <div>
                     <label className="text-gray-600 text-xs block mb-1">수량</label>
-                    <input
-                      type="number" min="1" value={buyQty}
-                      onChange={(e) => setBuyQty(e.target.value)}
-                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500"
-                      placeholder="0"
-                    />
+                    <input type="number" min="1" value={buyQty} onChange={(e) => setBuyQty(e.target.value)}
+                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500" placeholder="0" />
                   </div>
                   <div>
                     <label className="text-gray-600 text-xs block mb-1">지정가</label>
-                    <input
-                      type="number" min="0" step="any" value={buyPrice}
-                      onChange={(e) => setBuyPrice(e.target.value)}
-                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500"
-                    />
+                    <input type="number" min="0" step="any" value={buyPrice} onChange={(e) => setBuyPrice(e.target.value)}
+                      className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-green-500" />
                   </div>
-                  {buyQty && buyPrice && (
-                    <div className="text-gray-500 text-xs">
-                      합계: {isKRW ? '₩' : '$'}{fmt(parseFloat(buyPrice) * parseInt(buyQty), isKRW ? 0 : 2)}
-                    </div>
+                  {buyQty && buyPrice && !isNaN(parseFloat(buyPrice)) && !isNaN(parseInt(buyQty)) && (
+                    <div className="text-gray-500 text-xs">합계: {fmt(parseFloat(buyPrice) * parseInt(buyQty), isKRWstock)}</div>
                   )}
-                  <button
-                    onClick={handleBuy} disabled={tradeLoading}
-                    className="w-full bg-green-600 hover:bg-green-500 disabled:bg-green-900 disabled:text-green-800 text-black font-bold py-2 rounded text-xs transition-colors"
-                  >
+                  <button onClick={handleBuy} disabled={tradeLoading}
+                    className="w-full bg-green-600 hover:bg-green-500 disabled:bg-green-900 disabled:text-green-800 text-black font-bold py-2 rounded text-xs transition-colors">
                     {tradeLoading ? '처리 중...' : '매수'}
                   </button>
                 </div>
               </div>
 
               {/* 매도 */}
-              {currentHolding && (
+              {currentHolding ? (
                 <div className="border border-[#2a2a2a] rounded p-3">
                   <div className="text-red-400 text-xs mb-3 font-bold">▼ 매도</div>
                   <div className="text-gray-500 text-xs mb-2">
-                    보유: {fmt(currentHolding.quantity)}주 · 평균단가 {isKRW ? '₩' : '$'}{fmt(currentHolding.avgPrice, isKRW ? 0 : 2)}
+                    보유: {currentHolding.quantity.toLocaleString()}주 · 평균 {fmt(currentHolding.avgPrice, isKRWstock)}
                   </div>
                   <div className="space-y-2">
                     <div>
                       <label className="text-gray-600 text-xs block mb-1">수량</label>
-                      <input
-                        type="number" min="1" max={currentHolding.quantity} value={sellQty}
-                        onChange={(e) => setSellQty(e.target.value)}
-                        className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500"
-                        placeholder="0"
-                      />
+                      <input type="number" min="1" max={currentHolding.quantity} value={sellQty} onChange={(e) => setSellQty(e.target.value)}
+                        className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500" placeholder="0" />
                     </div>
                     <div>
                       <label className="text-gray-600 text-xs block mb-1">지정가</label>
-                      <input
-                        type="number" min="0" step="any" value={sellPrice}
-                        onChange={(e) => setSellPrice(e.target.value)}
-                        className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500"
-                      />
+                      <input type="number" min="0" step="any" value={sellPrice} onChange={(e) => setSellPrice(e.target.value)}
+                        className="w-full bg-[#0f0f0f] border border-[#2a2a2a] rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-red-500" />
                     </div>
-                    {sellQty && sellPrice && (
-                      <div className="text-gray-500 text-xs">
-                        합계: {isKRW ? '₩' : '$'}{fmt(parseFloat(sellPrice) * parseInt(sellQty), isKRW ? 0 : 2)}
-                      </div>
+                    {sellQty && sellPrice && !isNaN(parseFloat(sellPrice)) && !isNaN(parseInt(sellQty)) && (
+                      <div className="text-gray-500 text-xs">합계: {fmt(parseFloat(sellPrice) * parseInt(sellQty), isKRWstock)}</div>
                     )}
-                    <button
-                      onClick={handleSell} disabled={tradeLoading}
-                      className="w-full bg-red-700 hover:bg-red-600 disabled:bg-red-950 disabled:text-red-900 text-white font-bold py-2 rounded text-xs transition-colors"
-                    >
+                    <button onClick={handleSell} disabled={tradeLoading}
+                      className="w-full bg-red-700 hover:bg-red-600 disabled:bg-red-950 disabled:text-red-900 text-white font-bold py-2 rounded text-xs transition-colors">
                       {tradeLoading ? '처리 중...' : '매도'}
                     </button>
                   </div>
                 </div>
+              ) : (
+                <div className="border border-[#1f1f1f] rounded p-3 flex items-center justify-center text-gray-700 text-xs">
+                  보유 종목 없음
+                </div>
               )}
             </div>
 
-            {tradeMsg && (
-              <div className="mt-3 text-green-400 text-xs border border-green-900 bg-green-950/30 rounded px-3 py-2">
-                ✓ {tradeMsg}
-              </div>
-            )}
-            {tradeError && (
-              <div className="mt-3 text-red-400 text-xs border border-red-900 bg-red-950/30 rounded px-3 py-2">
-                ✗ {tradeError}
-              </div>
-            )}
+            {tradeMsg && <div className="mt-3 text-green-400 text-xs border border-green-900 bg-green-950/30 rounded px-3 py-2">✓ {tradeMsg}</div>}
+            {tradeError && <div className="mt-3 text-red-400 text-xs border border-red-900 bg-red-950/30 rounded px-3 py-2">✗ {tradeError}</div>}
           </div>
         )}
 
@@ -425,14 +411,10 @@ export default function DashboardPage() {
         <div className="bg-[#141414] border border-[#1f1f1f] rounded">
           <div className="px-4 py-3 border-b border-[#1f1f1f]">
             <span className="text-gray-400 text-xs">포트폴리오</span>
-            {holdingsWithPrice.length > 0 && (
-              <span className="text-gray-600 text-xs ml-2">({holdingsWithPrice.length}개 종목)</span>
-            )}
+            {holdingsWithPrice.length > 0 && <span className="text-gray-600 text-xs ml-2">({holdingsWithPrice.length}개 종목)</span>}
           </div>
           {holdingsWithPrice.length === 0 ? (
-            <div className="px-4 py-8 text-center text-gray-700 text-sm">
-              보유 종목이 없습니다. 종목을 검색하고 첫 매수를 시작해 보세요.
-            </div>
+            <div className="px-4 py-8 text-center text-gray-700 text-sm">보유 종목 없음</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -449,20 +431,15 @@ export default function DashboardPage() {
                 <tbody>
                   {holdingsWithPrice.map((h) => {
                     const krw = h.market === 'KR';
-                    const cur = krw ? '₩' : '$';
-                    const dec = krw ? 0 : 2;
                     return (
-                      <tr
-                        key={h.symbol}
-                        onClick={() => handleSelectStock(h.symbol)}
-                        className="border-b border-[#1a1a1a] hover:bg-[#1a1a1a] cursor-pointer transition-colors"
-                      >
+                      <tr key={h.symbol} onClick={() => { setMarket(h.market); handleSelectStock(h.symbol); }}
+                        className="border-b border-[#1a1a1a] hover:bg-[#1a1a1a] cursor-pointer transition-colors">
                         <td className="px-4 py-3 text-green-400 font-mono font-bold">{h.symbol}</td>
                         <td className="px-4 py-3 text-gray-500 hidden md:table-cell">{h.name}</td>
-                        <td className="px-4 py-3 text-right text-gray-300">{cur}{fmt(h.avgPrice, dec)}</td>
-                        <td className="px-4 py-3 text-right text-gray-300">{fmt(h.quantity)}</td>
+                        <td className="px-4 py-3 text-right text-gray-300">{fmt(h.avgPrice, krw)}</td>
+                        <td className="px-4 py-3 text-right text-gray-300">{h.quantity.toLocaleString()}</td>
                         <td className="px-4 py-3 text-right text-gray-300">
-                          {h.currentPrice !== null ? `${cur}${fmt(h.currentPrice, dec)}` : '—'}
+                          {h.currentPrice !== null ? fmt(h.currentPrice, krw) : '—'}
                         </td>
                         <td className={`px-4 py-3 text-right font-bold ${h.pnlPct === null ? 'text-gray-600' : h.pnlPct >= 0 ? 'text-green-400' : 'text-red-400'}`}>
                           {h.pnlPct === null ? '—' : `${h.pnlPct >= 0 ? '+' : ''}${h.pnlPct.toFixed(2)}%`}

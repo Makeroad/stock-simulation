@@ -26,8 +26,10 @@ export interface Transaction {
 }
 
 export interface UserProfile {
-  seedMoney: number;
-  cash: number;
+  seedMoneyKRW: number;
+  seedMoneyUSD: number;
+  cashKRW: number;
+  cashUSD: number;
   createdAt: unknown;
 }
 
@@ -37,8 +39,10 @@ export async function initUserProfile(uid: string) {
   const snap = await getDoc(profileRef);
   if (!snap.exists()) {
     await setDoc(profileRef, {
-      seedMoney: 5000000,
-      cash: 5000000,
+      seedMoneyKRW: 10000000,
+      seedMoneyUSD: 10000,
+      cashKRW: 10000000,
+      cashUSD: 10000,
       createdAt: serverTimestamp(),
     });
   }
@@ -47,7 +51,21 @@ export async function initUserProfile(uid: string) {
 export async function getUserProfile(uid: string): Promise<UserProfile | null> {
   const db = getDbInstance();
   const snap = await getDoc(doc(db, 'users', uid, 'data', 'profile'));
-  return snap.exists() ? (snap.data() as UserProfile) : null;
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  // 구버전 단일 cash 필드 호환
+  if (data.cashKRW === undefined) {
+    const migrated: UserProfile = {
+      seedMoneyKRW: 10000000,
+      seedMoneyUSD: 10000,
+      cashKRW: 10000000,
+      cashUSD: 10000,
+      createdAt: data.createdAt,
+    };
+    await setDoc(doc(db, 'users', uid, 'data', 'profile'), migrated);
+    return migrated;
+  }
+  return data as UserProfile;
 }
 
 export async function getHoldings(uid: string): Promise<Record<string, Holding>> {
@@ -63,17 +81,21 @@ export async function buyStock(
   market: 'US' | 'KR',
   price: number,
   quantity: number,
-  currentCash: number,
+  profile: UserProfile,
   currentHoldings: Record<string, Holding>
 ) {
   const db = getDbInstance();
   const total = price * quantity;
-  if (total > currentCash) throw new Error('Insufficient cash');
+  const isKRW = market === 'KR';
 
-  const newCash = currentCash - total;
+  const availableCash = isKRW ? profile.cashKRW : profile.cashUSD;
+  if (total > availableCash) throw new Error('Insufficient cash');
+
+  const newCash = availableCash - total;
+  const cashField = isKRW ? 'cashKRW' : 'cashUSD';
+
   const existing = currentHoldings[symbol];
   let newHolding: Holding;
-
   if (existing) {
     const newQty = existing.quantity + quantity;
     const newAvg = (existing.avgPrice * existing.quantity + price * quantity) / newQty;
@@ -83,20 +105,12 @@ export async function buyStock(
   }
 
   const tx: Transaction = {
-    symbol,
-    type: 'buy',
-    price,
-    quantity,
-    total,
+    symbol, type: 'buy', price, quantity, total,
     date: new Date().toISOString(),
   };
 
-  await updateDoc(doc(db, 'users', uid, 'data', 'profile'), { cash: newCash });
-  await setDoc(
-    doc(db, 'users', uid, 'data', 'holdings'),
-    { [symbol]: newHolding },
-    { merge: true }
-  );
+  await updateDoc(doc(db, 'users', uid, 'data', 'profile'), { [cashField]: newCash });
+  await setDoc(doc(db, 'users', uid, 'data', 'holdings'), { [symbol]: newHolding }, { merge: true });
 
   const txRef = doc(db, 'users', uid, 'data', 'transactions');
   const txSnap = await getDoc(txRef);
@@ -107,9 +121,10 @@ export async function buyStock(
 export async function sellStock(
   uid: string,
   symbol: string,
+  market: 'US' | 'KR',
   price: number,
   quantity: number,
-  currentCash: number,
+  profile: UserProfile,
   currentHoldings: Record<string, Holding>
 ) {
   const db = getDbInstance();
@@ -118,19 +133,18 @@ export async function sellStock(
   if (quantity > holding.quantity) throw new Error('Insufficient holdings');
 
   const total = price * quantity;
+  const isKRW = market === 'KR';
+  const cashField = isKRW ? 'cashKRW' : 'cashUSD';
+  const currentCash = isKRW ? profile.cashKRW : profile.cashUSD;
   const newCash = currentCash + total;
   const newQty = holding.quantity - quantity;
 
   const tx: Transaction = {
-    symbol,
-    type: 'sell',
-    price,
-    quantity,
-    total,
+    symbol, type: 'sell', price, quantity, total,
     date: new Date().toISOString(),
   };
 
-  await updateDoc(doc(db, 'users', uid, 'data', 'profile'), { cash: newCash });
+  await updateDoc(doc(db, 'users', uid, 'data', 'profile'), { [cashField]: newCash });
 
   if (newQty === 0) {
     const holdingsRef = doc(db, 'users', uid, 'data', 'holdings');
