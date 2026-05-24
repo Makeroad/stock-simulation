@@ -46,6 +46,20 @@ async function fsPatch(path: string, fields: Record<string, FsValue>, auth: stri
   return res.json();
 }
 
+async function fetchCurrentPrice(symbol: string): Promise<number | null> {
+  try {
+    const baseUrl = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : 'http://localhost:3000';
+    const res = await fetch(`${baseUrl}/api/quote/${encodeURIComponent(symbol)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.price ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function POST(req: NextRequest) {
   const auth = req.headers.get('authorization') ?? '';
   const body = await req.json();
@@ -53,6 +67,21 @@ export async function POST(req: NextRequest) {
 
   if (!uid || !action || !symbol || !price || !quantity) {
     return NextResponse.json({ error: '필수 파라미터 누락' }, { status: 400 });
+  }
+
+  // 현재가 조회 및 지정가 검증
+  const currentPrice = await fetchCurrentPrice(symbol);
+  if (currentPrice !== null) {
+    if (action === 'buy' && price < currentPrice) {
+      return NextResponse.json({
+        error: `지정가(${price.toLocaleString()})가 현재가(${Math.round(currentPrice).toLocaleString()})보다 낮습니다. 현재가 이상으로 입력해 주세요.`,
+      }, { status: 400 });
+    }
+    if (action === 'sell' && price > currentPrice) {
+      return NextResponse.json({
+        error: `지정가(${price.toLocaleString()})가 현재가(${Math.round(currentPrice).toLocaleString()})보다 높습니다. 현재가 이하로 입력해 주세요.`,
+      }, { status: 400 });
+    }
   }
 
   // 프로필 + 보유 주식 조회

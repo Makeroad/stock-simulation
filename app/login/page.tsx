@@ -9,7 +9,6 @@ import {
   createUserWithEmailAndPassword,
 } from 'firebase/auth';
 import { getAuthInstance } from '@/lib/firebase';
-import { initUserProfile } from '@/lib/firestore';
 
 function toEmail(id: string) {
   return `${id.toLowerCase()}@stockapp.local`;
@@ -44,12 +43,17 @@ export default function LoginPage() {
     setLoading(true);
     try {
       const email = toEmail(userId);
-      const auth = getAuthInstance();
+      const authInstance = getAuthInstance();
       if (isSignUp) {
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
-        await initUserProfile(cred.user.uid);
+        const cred = await createUserWithEmailAndPassword(authInstance, email, password);
+        const token = await cred.user.getIdToken();
+        await fetch('/api/user/profile', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uid: cred.user.uid }),
+        });
       } else {
-        await signInWithEmailAndPassword(auth, email, password);
+        await signInWithEmailAndPassword(authInstance, email, password);
       }
       router.push('/dashboard');
     } catch (err: unknown) {
@@ -135,7 +139,7 @@ export default function LoginPage() {
 
           {isSignUp && (
             <p className="text-gray-600 text-xs mt-4 text-center">
-              신규 계정에는 ₩5,000,000 시드머니가 지급됩니다
+              신규 계정에는 ₩10,000,000 + $10,000 시드머니가 지급됩니다
             </p>
           )}
         </div>
