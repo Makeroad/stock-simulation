@@ -10,11 +10,11 @@ export async function GET(
     if (symbol.endsWith('.KS')) {
       // Korean stock via yahoo-finance2
       const yahooFinance = (await import('yahoo-finance2')).default;
-      const quote = await yahooFinance.quote(symbol);
+      const quote = await yahooFinance.quote(symbol) as Record<string, unknown>;
       return NextResponse.json({
         symbol,
-        name: quote.longName || quote.shortName || symbol,
-        price: quote.regularMarketPrice ?? 0,
+        name: (quote.longName as string) || (quote.shortName as string) || symbol,
+        price: (quote.regularMarketPrice as number) ?? 0,
         currency: 'KRW',
       });
     } else {
